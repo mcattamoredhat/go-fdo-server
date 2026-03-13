@@ -71,6 +71,9 @@ owner_config_file="${configs_dir}/owner.yaml"
 owner_reuse_creds="false"
 owner_to0_insecure_tls="false"
 
+go_fdo_server_rpms="go-fdo-server go-fdo-server-manufacturer go-fdo-server-owner go-fdo-server-rendezvous"
+go_fdo_client_rpms="go-fdo-client"
+
 # systemd drop-in file configuration
 #
 systemd_drop_in_base_dir="/run/systemd/system"
@@ -209,50 +212,103 @@ install_from_copr() {
   # https://docs.testing-farm.io/Testing%20Farm/0.1/test-environment.html#disabling-tag-repository
   sudo dnf install --disablerepo=* --enablerepo=copr:copr.fedorainfracloud.org:group_fedora-iot:fedora-iot -y "$@"
   sudo dnf copr disable -y @fedora-iot/fedora-iot
+  sudo dnf copr remove -y @fedora-iot/fedora-iot
+}
+
+install_from_compose(){
+  source /etc/os-release
+  case "${ID}-${VERSION_ID}" in
+    fedora-rawhide)
+      compose_host="http://kojipkgs.fedoraproject.org"
+      compose_id="latest-Fedora-${VERSION_ID^}"
+      compose_streams="Everything"
+      compose_base_url="${COMPOSE_BASE_URL:-${compose_host}/compose/${VERSION_ID}/${compose_id}/compose}"
+      ;;
+    fedora-*)
+      compose_host="http://kojipkgs.fedoraproject.org"
+      compose_streams="Everything"
+      compose_base_url="${COMPOSE_BASE_URL:-${compose_host}/compose/updates/f${VERSION_ID}-updates/compose}"
+      ;;
+    centos-*)
+      compose_host="https://composes.stream.centos.org"
+      compose_id="latest-CentOS-Stream"
+      compose_streams="BaseOS AppStream"
+      compose_base_url="${COMPOSE_BASE_URL:-${compose_host}/stream-${VERSION_ID}/production/${compose_id}/compose}"
+      ;;
+    rhel-*)
+      compose_base_url="${COMPOSE_BASE_URL:-}"
+      [ -n "${compose_base_url}" ] || log_error "Compose base URL must be set for RHEL (eg='http://download.host/.../latest-RHEL-Compose/compose/')"
+      compose_streams="${COMPOSE_STREAMS:-BaseOS AppStream}"
+      [ -n "${compose_streams}" ] || log_error "Streams must be set for RHEL (default='BaseOS AppStream')"
+      ;;
+    *)
+      log_error "OS not supported"
+      ;;
+  esac
+  for stream in ${compose_streams}; do
+    repo_name="compose-${ID}-${VERSION_ID}-${stream}"
+    sudo tee "/etc/yum.repos.d/compose-${repo_name}.repo" <<EOF
+[${repo_name}]
+name=${repo_name}
+baseurl=${compose_base_url}/${stream}/$(uname -m)/os/
+enabled=1
+gpgcheck=0
+EOF
+  done
+  sudo dnf install --disablerepo=* --enablerepo=compose* -y "$@"
+  sudo rm -f /etc/yum.repos.d/compose-*
 }
 
 install_client() {
   # If PACKIT_COPR_RPMS is not defined it means we are running the test
-  # locally so we will install the client from the copr repo
-  [ -v "PACKIT_COPR_RPMS" ] || rpm -q go-fdo-client &>/dev/null || install_from_copr go-fdo-client
+  # locally so we will install the client from the copr repo or from a compose
+  if [ ! -v "PACKIT_COPR_RPMS" ]; then
+    if [ "${USE_COMPOSE:-false}" == "true" ] ; then
+      install_from_compose ${go_fdo_client_rpms}
+    else
+      install_from_copr ${go_fdo_client_rpms}
+    fi
+  fi
   log_info "Installed Client RPM:"
-  echo "    ⚙ $(rpm -q go-fdo-client)"
+  echo "    ⚙ $(rpm -q ${go_fdo_client_rpms})"
 }
 
 uninstall_client() {
-  # When running a test locally we remove the client package
-  # after a successful execution.
-  [ -v "PACKIT_COPR_RPMS" ] || {
-    sudo dnf remove -y go-fdo-client
-    sudo dnf copr remove -y @fedora-iot/fedora-iot
-  }
+  [ -v "PACKIT_COPR_RPMS" ] || sudo dnf remove -y ${go_fdo_client_rpms}
 }
 
 install_server() {
-  # If PACKIT_COPR_RPMS is not defined it means we are running the test
-  # locally so we will build and install the RPMs from the *committed* code
-  if [ ! -v "PACKIT_COPR_RPMS" ]; then
-    commit="$(git rev-parse --short HEAD)"
-    rpm -q go-fdo-server | grep -q "go-fdo-server.*git${commit}.*" || {
-      make rpm
-      sudo dnf install -y rpmbuild/rpms/{noarch,"$(uname -m)"}/*git"${commit}"*.rpm
-    }
-  else
-    log_info "Expected Server RPMs:"
+  # If PACKIT_COPR_RPMS is defined it means that all the rpms were built and installed already by packit
+  if [ -v "PACKIT_COPR_RPMS" ]; then
+    log_info "Expected RPMs:"
     for i in ${PACKIT_COPR_RPMS}; do
       echo "    ⚙ $i"
     done | sort
+  else
+    # If PACKIT_COPR_RPMS is not defined it means we are running the test
+    # locally so we will build and install the RPMs from the *committed* code
+    # or from a compose if USE_COMPOSE environment variable is "true"
+    if [ "${USE_COMPOSE:-false}" == "true" ] ; then
+      install_from_compose ${go_fdo_server_rpms}
+    else
+      commit="$(git rev-parse --short HEAD)"
+      rpm -q go-fdo-server | grep -q "go-fdo-server.*git${commit}.*" || {
+        make rpm
+        sudo dnf install -y rpmbuild/rpms/{noarch,"$(uname -m)"}/*git"${commit}"*.rpm
+      }
+    fi
   fi
   # Make sure the RPMS are installed
-  installed_rpms=$(rpm -q --qf "%{nvr}.%{arch} " go-fdo-server{,-{manufacturer,owner,rendezvous}})
+  installed_rpms=$(rpm -q --qf "%{nvr}.%{arch} " ${go_fdo_server_rpms})
   log_info "Installed Server RPMs:"
   for i in ${installed_rpms}; do
     echo "    ⚙ $i"
   done | sort
+  sudo chmod o+rX /etc/pki/go-fdo-server/
 }
 
 uninstall_server() {
-  [ -v "PACKIT_COPR_RPMS" ] || sudo dnf remove -y go-fdo-server{,-manufacturer,-owner,-rendezvous}
+  [ -v "PACKIT_COPR_RPMS" ] || sudo dnf remove -y ${go_fdo_server_rpms}
 }
 
 start_service_manufacturer() {

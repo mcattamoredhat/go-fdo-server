@@ -1,0 +1,23 @@
+summary: Health API testing with PostgreSQL backend
+description: |
+    Tests the health API with PostgreSQL database covering:
+    - Health endpoint availability
+    - PostgreSQL database connectivity checks
+    - Service readiness verification
+    - Database connection status monitoring
+    - Health check response validation
+
+test: ../../rpm/test-health-api-postgres.sh
+
+framework: shell
+
+duration: 30m
+
+tag:
+  - fdo
+  - health
+  - api
+  - postgres
+  - database
+  - monitoring
+  - rpm
