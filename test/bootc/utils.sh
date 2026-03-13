@@ -31,6 +31,11 @@ case "${ID}-${VERSION_ID}" in
     base_image_url="quay.io/centos-bootc/centos-bootc:stream${VERSION_ID}"
     boot_args="uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no"
     ;;
+  "rhel-10.2")
+    os_variant="rhel10.0"
+    base_image_url="registry.stage.redhat.io/rhel10/rhel-bootc:10.2"
+    boot_args="uefi,firmware.feature0.name=secure-boot,firmware.feature0.enabled=no"
+    ;;
   *)
     log_error "Unsupported distro: ${ID}-${VERSION_ID}"
     exit 1
@@ -38,7 +43,37 @@ case "${ID}-${VERSION_ID}" in
 esac
 
 build_bootc_container() {
-  tee Containerfile >/dev/null <<EOF
+  if [[ "${ID}-${VERSION_ID}" == "rhel-10.2" ]]; then
+    # Download go-fdo-client RPMs from the RHEL nightly compose onto the host.
+    # The subdirectory becomes part of the podman build context so the
+    # Containerfile can COPY them in without network access inside the build.
+    local client_rpms_dir="rhel-client-rpms"
+    rm -rf "${client_rpms_dir}"
+    mkdir -p "${client_rpms_dir}"
+    local go_fdo_client_url="http://${DOWNLOAD_NODE}/rhel-10/composes/RHEL-10/${COMPOSE_ID}/compose/AppStream/x86_64/os/Packages/"
+    log_info "Downloading go-fdo-client RPMs from ${go_fdo_client_url}"
+    (
+      cd "${client_rpms_dir}"
+      curl --silent "${go_fdo_client_url}" \
+        | grep -oP 'href="\Kgo-fdo-client-[^"]+\.rpm' \
+        | sort -u \
+        | while read -r pkg; do
+            echo "Downloading: ${pkg}"
+            curl --fail --silent --show-error \
+                 --output "./${pkg}" \
+                 "${go_fdo_client_url}${pkg}"
+          done
+    )
+
+    tee Containerfile >/dev/null <<EOF
+FROM ${base_image_url}
+# Configure RHEL 10.2 nightly repos so dnf can resolve dependencies
+RUN printf '[RHEL-10.2-NIGHTLY-BaseOS]\nname=baseos\nbaseurl=http://${DOWNLOAD_NODE}/rhel-10/nightly/RHEL-10/latest-RHEL-10.2/compose/BaseOS/x86_64/os\nenabled=1\ngpgcheck=0\n[RHEL-10.2-NIGHTLY-AppStream]\nname=appstream\nbaseurl=http://${DOWNLOAD_NODE}/rhel-10/nightly/RHEL-10/latest-RHEL-10.2/compose/AppStream/x86_64/os/\nenabled=1\ngpgcheck=0\n' > /etc/yum.repos.d/rhel-nightly.repo
+COPY ${client_rpms_dir}/*.rpm /tmp/rpms/
+RUN dnf install -y /tmp/rpms/*.rpm && rm -rf /tmp/rpms
+EOF
+  else
+    tee Containerfile >/dev/null <<EOF
 FROM ${base_image_url}
 RUN dnf=\$(readlink \$(command -v dnf)); [ "\${dnf}" = "dnf5" ] || dnf=dnf ; \
     rpm -q --whatprovides \${dnf}'-command(copr)' &> /dev/null || \${dnf} install -y \${dnf}'-command(copr)'; \
@@ -46,6 +81,7 @@ RUN dnf=\$(readlink \$(command -v dnf)); [ "\${dnf}" = "dnf5" ] || dnf=dnf ; \
     \${dnf} install -y go-fdo-client; \
     \${dnf} copr disable -y @fedora-iot/fedora-iot
 EOF
+  fi
   podman build --retry=5 --retry-delay=10s -t "fdo-bootc:latest" -f Containerfile .
 }
 
@@ -99,7 +135,28 @@ echo "admin ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/admin' "${new_ks_file}"
 }
 
 install_server() {
-  if [ ! -v "PACKIT_COPR_RPMS" ]; then
+  if [[ "${ID}-${VERSION_ID}" == "rhel-10.2" ]] && [ ! -v "PACKIT_COPR_RPMS" ]; then
+    # On RHEL 10.2 without a Packit COPR artifact, fetch server RPMs directly
+    # from the nightly compose instead of building them from source.
+    local server_rpms_dir
+    server_rpms_dir=$(mktemp -d)
+    local go_fdo_server_url="http://${DOWNLOAD_NODE}/rhel-10/composes/RHEL-10/${COMPOSE_ID}/compose/AppStream/x86_64/os/Packages/"
+    log_info "Downloading go-fdo-server RPMs from ${go_fdo_server_url}"
+    (
+      cd "${server_rpms_dir}"
+      curl --silent "${go_fdo_server_url}" \
+        | grep -oP 'href="\Kgo-fdo-server-[^"]+\.rpm' \
+        | sort -u \
+        | while read -r pkg; do
+            echo "Downloading: ${pkg}"
+            curl --fail --silent --show-error \
+                 --output "./${pkg}" \
+                 "${go_fdo_server_url}${pkg}"
+          done
+    )
+    sudo dnf install -y "${server_rpms_dir}"/go-fdo-server*.rpm
+    rm -rf "${server_rpms_dir}"
+  elif [ ! -v "PACKIT_COPR_RPMS" ]; then
     sudo dnf install -y golang make
     commit="$(git rev-parse --short HEAD)"
     rpm -q go-fdo-server | grep -q "go-fdo-server.*git${commit}.*" || {

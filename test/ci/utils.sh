@@ -397,7 +397,31 @@ stop_services() {
 }
 
 install_client() {
-  go install github.com/fido-device-onboard/go-fdo-client@main
+  . /etc/os-release
+  if [[ "${ID}-${VERSION_ID}" == "rhel-10.2" ]]; then
+    # On RHEL 10.2 curl go-fdo-client RPMs from the nightly compose and
+    # install them with dnf instead of building the binary from source.
+    local rpms_dir
+    rpms_dir=$(mktemp -d)
+    local go_fdo_client_url="http://${DOWNLOAD_NODE}/rhel-10/composes/RHEL-10/${COMPOSE_ID}/compose/AppStream/x86_64/os/Packages/"
+    log_info "Downloading go-fdo-client RPMs from ${go_fdo_client_url}"
+    (
+      cd "${rpms_dir}"
+      curl --silent "${go_fdo_client_url}" \
+        | grep -oP 'href="\Kgo-fdo-client-[^"]+\.rpm' \
+        | sort -u \
+        | while read -r pkg; do
+            echo "Downloading: ${pkg}"
+            curl --fail --silent --show-error \
+                 --output "./${pkg}" \
+                 "${go_fdo_client_url}${pkg}"
+          done
+    )
+    sudo dnf install -y "${rpms_dir}"/go-fdo-client*.rpm
+    rm -rf "${rpms_dir}"
+  else
+    go install github.com/fido-device-onboard/go-fdo-client@main
+  fi
 }
 
 uninstall_client() {
@@ -406,8 +430,32 @@ uninstall_client() {
 }
 
 install_server() {
-  mkdir -p "${bin_dir}"
-  make build && install -m 755 go-fdo-server "${bin_dir}" && rm -f go-fdo-server
+  . /etc/os-release
+  if [[ "${ID}-${VERSION_ID}" == "rhel-10.2" ]]; then
+    # On RHEL 10.2 curl go-fdo-server RPMs from the nightly compose and
+    # install them with dnf instead of building the binary from source.
+    local rpms_dir
+    rpms_dir=$(mktemp -d)
+    local go_fdo_server_url="http://${DOWNLOAD_NODE}/rhel-10/composes/RHEL-10/${COMPOSE_ID}/compose/AppStream/x86_64/os/Packages/"
+    log_info "Downloading go-fdo-server RPMs from ${go_fdo_server_url}"
+    (
+      cd "${rpms_dir}"
+      curl --silent "${go_fdo_server_url}" \
+        | grep -oP 'href="\Kgo-fdo-server-[^"]+\.rpm' \
+        | sort -u \
+        | while read -r pkg; do
+            echo "Downloading: ${pkg}"
+            curl --fail --silent --show-error \
+                 --output "./${pkg}" \
+                 "${go_fdo_server_url}${pkg}"
+          done
+    )
+    sudo dnf install -y "${rpms_dir}"/go-fdo-server*.rpm
+    rm -rf "${rpms_dir}"
+  else
+    mkdir -p "${bin_dir}"
+    make build && install -m 755 go-fdo-server "${bin_dir}" && rm -f go-fdo-server
+  fi
 }
 
 uninstall_server() {
