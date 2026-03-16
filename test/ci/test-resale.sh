@@ -33,15 +33,51 @@ new_owner_https_subj="/C=US/O=FDO/CN=new_owner"
 new_owner_https_key="${certs_dir}/new_owner-http.key"
 new_owner_https_crt="${certs_dir}/new_owner-http.crt"
 
-start_service_new_owner() {
-  local extra_opts=()
+new_owner_config_file="${base_dir}/new_owner.yaml"
+
+generate_new_owner_config() {
+  cat >"${new_owner_config_file}" <<EOF
+log:
+  level: "debug"
+db:
+  type: "sqlite"
+  dsn: "file:${base_dir}/new_owner.db"
+http:
+  ip: "${new_owner_dns}"
+  port: "${new_owner_port}"
+device_ca:
+  cert: "${device_ca_crt}"
+owner:
+  key: "${new_owner_key}"
+  to0_insecure_tls: true
+EOF
   if [ "${new_owner_protocol}" = "https" ]; then
-    extra_opts+=(--http-cert "${new_owner_https_crt}" --http-key "${new_owner_https_key}" --to0-insecure-tls)
+    # Append TLS cert/key under the http: section requires a fresh write;
+    # rewrite the whole file so the indentation is correct.
+    cat >"${new_owner_config_file}" <<EOF
+log:
+  level: "debug"
+db:
+  type: "sqlite"
+  dsn: "file:${base_dir}/new_owner.db"
+http:
+  ip: "${new_owner_dns}"
+  port: "${new_owner_port}"
+  cert: "${new_owner_https_crt}"
+  key: "${new_owner_https_key}"
+device_ca:
+  cert: "${device_ca_crt}"
+owner:
+  key: "${new_owner_key}"
+  to0_insecure_tls: true
+EOF
   fi
+}
+
+start_service_new_owner() {
+  generate_new_owner_config
   run_go_fdo_server owner ${new_owner_service} new_owner ${new_owner_pid_file} ${new_owner_log} \
-    --owner-key="${new_owner_key}" \
-    --device-ca-cert="${device_ca_crt}"
-  "${extra_opts[@]}"
+    --config="${new_owner_config_file}"
 }
 
 run_test() {

@@ -319,7 +319,15 @@ run_go_fdo_server() {
   shift 5
   mkdir -p "$(dirname "${log}")"
   mkdir -p "$(dirname "${pid_file}")"
-  nohup "${bin_dir}/go-fdo-server" "${role}" "${address_port}" --db-type sqlite --db-dsn "file:${base_dir}/${name}.db" --log-level=debug "${@}" &>"${log}" &
+  # On RHEL 10.2 the binary is installed by RPM into /usr/bin; for all other
+  # distros it is built locally and placed in ${bin_dir}.
+  local server_bin
+  if [[ -x "${bin_dir}/go-fdo-server" ]]; then
+    server_bin="${bin_dir}/go-fdo-server"
+  else
+    server_bin="$(command -v go-fdo-server)"
+  fi
+  nohup "${server_bin}" "${role}" "${address_port}" --db-type sqlite --db-dsn "file:${base_dir}/${name}.db" --log-level=debug "${@}" &>"${log}" &
   echo -n $! >"${pid_file}"
 }
 
